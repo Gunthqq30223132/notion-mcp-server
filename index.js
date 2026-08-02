@@ -114,6 +114,33 @@ const NOTION_TOOLS = [
       },
       required: ["database_id"]
     }
+  },
+  {
+    name: "notion_create_page",
+    description: "Tạo một trang mới (Page) hoặc một bản ghi/hàng mới trong Notion Database hoặc Trang mẹ",
+    inputSchema: {
+      type: "object",
+      properties: {
+        parent_id: {
+          type: "string",
+          description: "ID của Database hoặc ID của Trang mẹ cần chứa trang mới này"
+        },
+        parent_type: {
+          type: "string",
+          enum: ["database_id", "page_id"],
+          description: "Loại cha: chọn 'database_id' nếu muốn tạo hàng mới trong Database, chọn 'page_id' nếu tạo trang con"
+        },
+        title: {
+          type: "string",
+          description: "Tiêu đề của trang hoặc tên của bản ghi mới"
+        },
+        content: {
+          type: "string",
+          description: "Nội dung văn bản ban đầu cần thêm vào trong trang mới (Tùy chọn)"
+        }
+      },
+      required: ["parent_id", "parent_type", "title"]
+    }
   }
 ];
 
@@ -147,6 +174,41 @@ async function executeNotionTool(name, args) {
     case "notion_query_database":
       const db = await notion.databases.query({ database_id: args.database_id, page_size: 10 });
       return db.results;
+    case "notion_create_page": {
+      const { parent_id, parent_type, title, content } = args;
+
+      const parent = parent_type === "database_id"
+        ? { database_id: parent_id }
+        : { page_id: parent_id };
+
+      const properties = parent_type === "database_id"
+        ? {
+            Name: {
+              title: [{ text: { content: title } }]
+            }
+          }
+        : {
+            title: {
+              title: [{ text: { content: title } }]
+            }
+          };
+
+      const children = content ? [
+        {
+          object: 'block',
+          type: 'paragraph',
+          paragraph: {
+            rich_text: [{ type: 'text', text: { content } }]
+          }
+        }
+      ] : [];
+
+      return await notion.pages.create({
+        parent,
+        properties,
+        children
+      });
+    }
     default:
       throw new Error(`Tool không hợp lệ: ${name}`);
   }
@@ -238,7 +300,6 @@ app.get('/mcp.json', sendMcpDiscovery);
 
 // Xử lý StreamableHTTP endpoint (chuẩn giao thức mới của Gemini MCP)
 const handleStreamableHttp = async (req, res) => {
-  // Nếu là GET request không chứa text/event-stream -> trả về MCP discovery metadata 200 OK ngay!
   if (req.method === 'GET') {
     const accept = req.headers.accept || '';
     if (!accept.includes('text/event-stream')) {
