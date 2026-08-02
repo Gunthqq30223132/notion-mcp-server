@@ -23,11 +23,11 @@ const notion = new Client({
 // Khởi tạo Express App
 const app = express();
 
-// Cấu hình CORS mở rộng cho Gemini Client
+// Cấu hình CORS mở rộng toàn diện cho Gemini Client
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'x-mcp-version', 'mcp-version'],
+  methods: ['GET', 'POST', 'OPTIONS', 'HEAD'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'x-mcp-version', 'mcp-version', 'x-mcp-transport'],
   exposedHeaders: ['Content-Type', 'x-mcp-version']
 }));
 
@@ -258,11 +258,11 @@ app.get('/health', (req, res) => {
   res.status(200).send('Notion MCP SSE Server đang hoạt động tốt.');
 });
 
-// 1. GET /sse: Khởi tạo kết nối SSE (Server-Sent Events)
-app.get('/sse', async (req, res) => {
+// Hàm xử lý SSE luồng dữ liệu thời gian thực
+const handleSse = async (req, res) => {
   console.log("🔗 Khởi tạo kết nối SSE từ Client...");
   
-  // Tự động tạo Absolute URL đầy đủ cho messages endpoint để Gemini Client truy cập chuẩn xác
+  // Tự động tạo Absolute URL đầy đủ cho messages endpoint
   const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
   const host = req.headers['x-forwarded-host'] || req.get('host');
   const messagesUrl = `${protocol}://${host}/messages`;
@@ -287,7 +287,11 @@ app.get('/sse', async (req, res) => {
   };
 
   await mcpServer.connect(transport);
-});
+};
+
+// Hỗ trợ cả /sse lẫn route gốc / cho các Client tự động quét root path
+app.get('/sse', handleSse);
+app.get('/', handleSse);
 
 // 2. POST /messages: Nhận và xử lý các phản hồi/yêu cầu MCP JSON-RPC từ Client
 app.post('/messages', async (req, res) => {
@@ -302,7 +306,7 @@ app.post('/messages', async (req, res) => {
     return res.status(404).send(`Không tìm thấy Session SSE hợp lệ cho ID: ${sessionId}`);
   }
 
-  // Truyền req.body trực tiếp vào handlePostMessage để tránh lỗi getRawBody stream
+  // Truyền req.body trực tiếp vào handlePostMessage để tránh lỗi stream readable
   await transport.handlePostMessage(req, res, req.body);
 });
 
