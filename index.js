@@ -31,9 +31,7 @@ app.use(cors({
   exposedHeaders: ['Content-Type', 'x-mcp-version']
 }));
 
-// LƯU Ý BẢO MẬT & KỸ THUẬT QUAN TRỌNG:
-// KHÔNG dùng app.use(express.json()) toàn cục vì nó sẽ làm tiêu thụ (consume) stream HTTP request trước, 
-// khiến SSEServerTransport.handlePostMessage bị lỗi "InternalServerError: stream is not readable".
+app.use(express.json());
 
 // Khởi tạo MCP Server Instance
 const mcpServer = new Server(
@@ -304,7 +302,8 @@ app.post('/messages', async (req, res) => {
     return res.status(404).send(`Không tìm thấy Session SSE hợp lệ cho ID: ${sessionId}`);
   }
 
-  await transport.handlePostMessage(req, res);
+  // Truyền req.body trực tiếp vào handlePostMessage để tránh lỗi getRawBody stream
+  await transport.handlePostMessage(req, res, req.body);
 });
 
 // Khởi chạy HTTP Server
