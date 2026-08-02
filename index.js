@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 3000;
 const NOTION_API_KEY = process.env.NOTION_API_KEY;
 
 if (!NOTION_API_KEY) {
-  console.warn("⚠️ CẢNH BÁO: NOTION_API_KEY chưa được khai báo trong biến môi trường (.env hoặc Render Environment Variables)!");
+  console.warn("⚠️ CẢNH BÁO: NOTION_API_KEY chưa được khai báo trong biến môi trường!");
 }
 
 // Khởi tạo Notion SDK Client
@@ -22,7 +22,15 @@ const notion = new Client({
 
 // Khởi tạo Express App
 const app = express();
-app.use(cors());
+
+// Cấu hình CORS mở rộng cho Gemini Client
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'x-mcp-version', 'mcp-version'],
+  exposedHeaders: ['Content-Type', 'x-mcp-version']
+}));
+
 app.use(express.json());
 
 // Khởi tạo MCP Server Instance
@@ -254,8 +262,15 @@ app.get('/health', (req, res) => {
 app.get('/sse', async (req, res) => {
   console.log("🔗 Khởi tạo kết nối SSE từ Client...");
   
-  // Thiết lập SSE Transport
-  const transport = new SSEServerTransport('/messages', res);
+  // Tự động tạo Absolute URL đầy đủ cho messages endpoint để Gemini Client truy cập chuẩn xác
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+  const host = req.headers['x-forwarded-host'] || req.get('host');
+  const messagesUrl = `${protocol}://${host}/messages`;
+
+  console.log(`📡 Sending endpoint event URL: ${messagesUrl}`);
+
+  // Thiết lập SSEServerTransport với Absolute URL
+  const transport = new SSEServerTransport(messagesUrl, res);
   transports.set(transport.sessionId, transport);
 
   // Gửi heartbeat ping mỗi 25s giữ cho kết nối SSE luôn sống qua Render Proxy
