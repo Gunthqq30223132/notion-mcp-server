@@ -214,7 +214,8 @@ const sendMcpDiscovery = (req, res) => {
   const host = req.headers['x-forwarded-host'] || req.get('host');
   const baseUrl = `${protocol}://${host}`;
 
-  res.json({
+  res.status(200).json({
+    status: "ok",
     name: "notion-mcp-server",
     version: "1.0.0",
     protocolVersion: "2024-11-05",
@@ -239,6 +240,14 @@ app.get('/mcp.json', sendMcpDiscovery);
 
 // Xử lý StreamableHTTP endpoint (chuẩn giao thức mới của Gemini MCP)
 const handleStreamableHttp = async (req, res) => {
+  // Nếu là GET request không chứa text/event-stream -> trả về MCP discovery metadata 200 OK ngay!
+  if (req.method === 'GET') {
+    const accept = req.headers.accept || '';
+    if (!accept.includes('text/event-stream')) {
+      return sendMcpDiscovery(req, res);
+    }
+  }
+
   try {
     // Đảm bảo Accept header mở rộng hỗ trợ cả application/json và text/event-stream nếu client không gửi đủ
     if (req.headers.accept && !req.headers.accept.includes('text/event-stream') && !req.headers.accept.includes('*/*')) {
@@ -257,7 +266,8 @@ app.all('/mcp', handleStreamableHttp);
 
 // Hàm xử lý SSE luồng dữ liệu thời gian thực cho legacy clients
 const handleSse = async (req, res) => {
-  if (req.headers.accept && req.headers.accept.includes('application/json')) {
+  const accept = req.headers.accept || '';
+  if (!accept.includes('text/event-stream')) {
     return sendMcpDiscovery(req, res);
   }
 
@@ -290,14 +300,18 @@ const handleSse = async (req, res) => {
   await mcpServer.connect(transport);
 };
 
-app.get('/sse', handleSse);
+app.all('/sse', handleSse);
 
-// Route gốc / tự động chọn StreamableHTTP hoặc SSE tùy theo request
+// Route gốc / tự động chọn StreamableHTTP, SSE hoặc Discovery tùy theo request
 app.all('/', async (req, res) => {
   if (req.method === 'POST') {
     return handleStreamableHttp(req, res);
   }
-  return handleSse(req, res);
+  const accept = req.headers.accept || '';
+  if (accept.includes('text/event-stream')) {
+    return handleSse(req, res);
+  }
+  return sendMcpDiscovery(req, res);
 });
 
 // 2. POST /messages: Nhận và xử lý các phản hồi/yêu cầu MCP JSON-RPC từ Client
@@ -318,7 +332,7 @@ app.post('/messages', async (req, res) => {
 
 // Khởi chạy HTTP Server
 app.listen(PORT, () => {
-  console.log(`🚀 Notion MCP Universal Server (StreamableHTTP + SSE) đang chạy tại Cổng: ${PORT}`);
+  console.log(`🚀 Notion MCP Universal Server (StreamableHTTP + SSE + Discovery) đang chạy tại Cổng: ${PORT}`);
   console.log(`⚡️ Endpoint StreamableHTTP: http://localhost:${PORT}/mcp`);
   console.log(`📡 Endpoint SSE: http://localhost:${PORT}/sse`);
 });
