@@ -31,6 +31,12 @@ app.use(cors({
   exposedHeaders: ['Content-Type', 'x-mcp-version']
 }));
 
+// Logger ghi vết tất cả các request đến từ Gemini để chẩn đoán
+app.use((req, res, next) => {
+  console.log(`📥 [${new Date().toISOString()}] ${req.method} ${req.url} - User-Agent: ${req.get('user-agent')} - Accept: ${req.get('accept')}`);
+  next();
+});
+
 app.use(express.json());
 
 // Khởi tạo MCP Server Instance
@@ -46,197 +52,136 @@ const mcpServer = new Server(
   }
 );
 
+const NOTION_TOOLS = [
+  {
+    name: "notion_search",
+    description: "Tìm kiếm trang (Pages) hoặc cơ sở dữ liệu (Databases) trong Notion Workspace",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Từ khóa cần tìm kiếm"
+        }
+      },
+      required: ["query"]
+    }
+  },
+  {
+    name: "notion_get_page",
+    description: "Lấy chi tiết thuộc tính của một Trang (Page ID) trong Notion",
+    inputSchema: {
+      type: "object",
+      properties: {
+        page_id: {
+          type: "string",
+          description: "ID của trang Notion"
+        }
+      },
+      required: ["page_id"]
+    }
+  },
+  {
+    name: "notion_get_block_children",
+    description: "Lấy nội dung các khối (Blocks/Nội dung văn bản) bên trong một Trang hoặc Block ID",
+    inputSchema: {
+      type: "object",
+      properties: {
+        block_id: {
+          type: "string",
+          description: "ID của khối hoặc ID của trang Notion"
+        }
+      },
+      required: ["block_id"]
+    }
+  },
+  {
+    name: "notion_append_block_children",
+    description: "Thêm nội dung văn bản (Paragraph Block) vào cuối một trang Notion",
+    inputSchema: {
+      type: "object",
+      properties: {
+        block_id: {
+          type: "string",
+          description: "ID của trang hoặc khối cần chèn nội dung"
+        },
+        text: {
+          type: "string",
+          description: "Nội dung văn bản cần thêm vào"
+        }
+      },
+      required: ["block_id", "text"]
+    }
+  },
+  {
+    name: "notion_query_database",
+    description: "Truy vấn các bản ghi (Rows) trong một Database của Notion",
+    inputSchema: {
+      type: "object",
+      properties: {
+        database_id: {
+          type: "string",
+          description: "ID của Notion Database"
+        }
+      },
+      required: ["database_id"]
+    }
+  }
+];
+
 // Quản lý danh sách các Tool MCP tương tác với Notion
 mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: "notion_search",
-        description: "Tìm kiếm trang (Pages) hoặc cơ sở dữ liệu (Databases) trong Notion Workspace",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: {
-              type: "string",
-              description: "Từ khóa cần tìm kiếm"
-            }
-          },
-          required: ["query"]
-        }
-      },
-      {
-        name: "notion_get_page",
-        description: "Lấy chi tiết thuộc tính của một Trang (Page ID) trong Notion",
-        inputSchema: {
-          type: "object",
-          properties: {
-            page_id: {
-              type: "string",
-              description: "ID của trang Notion"
-            }
-          },
-          required: ["page_id"]
-        }
-      },
-      {
-        name: "notion_get_block_children",
-        description: "Lấy nội dung các khối (Blocks/Nội dung văn bản) bên trong một Trang hoặc Block ID",
-        inputSchema: {
-          type: "object",
-          properties: {
-            block_id: {
-              type: "string",
-              description: "ID của khối hoặc ID của trang Notion"
-            }
-          },
-          required: ["block_id"]
-        }
-      },
-      {
-        name: "notion_append_block_children",
-        description: "Thêm nội dung văn bản (Paragraph Block) vào cuối một trang Notion",
-        inputSchema: {
-          type: "object",
-          properties: {
-            block_id: {
-              type: "string",
-              description: "ID của trang hoặc khối cần chèn nội dung"
-            },
-            text: {
-              type: "string",
-              description: "Nội dung văn bản cần thêm vào"
-            }
-          },
-          required: ["block_id", "text"]
-        }
-      },
-      {
-        name: "notion_query_database",
-        description: "Truy vấn các bản ghi (Rows) trong một Database của Notion",
-        inputSchema: {
-          type: "object",
-          properties: {
-            database_id: {
-              type: "string",
-              description: "ID của Notion Database"
-            }
-          },
-          required: ["database_id"]
-        }
-      }
-    ]
-  };
+  return { tools: NOTION_TOOLS };
 });
 
-// Xử lý thực thi Tool (Tool Call execution)
+// Hàm thực thi các Tool của Notion
+async function executeNotionTool(name, args) {
+  if (!process.env.NOTION_API_KEY) {
+    throw new Error("NOTION_API_KEY chưa được cấu hình trên server.");
+  }
+
+  switch (name) {
+    case "notion_search":
+      return await notion.search({ query: args.query, page_size: 10 });
+    case "notion_get_page":
+      return await notion.pages.retrieve({ page_id: args.page_id });
+    case "notion_get_block_children":
+      const blocks = await notion.blocks.children.list({ block_id: args.block_id });
+      return blocks.results;
+    case "notion_append_block_children":
+      return await notion.blocks.children.append({
+        block_id: args.block_id,
+        children: [
+          {
+            object: 'block',
+            type: 'paragraph',
+            paragraph: {
+              rich_text: [{ type: 'text', text: { content: args.text } }],
+            },
+          },
+        ],
+      });
+    case "notion_query_database":
+      const db = await notion.databases.query({ database_id: args.database_id, page_size: 10 });
+      return db.results;
+    default:
+      throw new Error(`Tool không hợp lệ: ${name}`);
+  }
+}
+
+// Handler thực thi Tool cho MCP JSON-RPC
 mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-
-  if (!process.env.NOTION_API_KEY) {
+  try {
+    const result = await executeNotionTool(name, args);
     return {
-      isError: true,
       content: [
         {
           type: "text",
-          text: "Lỗi: NOTION_API_KEY chưa được cấu hình trên server.",
+          text: JSON.stringify(result, null, 2),
         },
       ],
     };
-  }
-
-  try {
-    switch (name) {
-      case "notion_search": {
-        const response = await notion.search({
-          query: args.query,
-          page_size: 10,
-        });
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(response.results, null, 2),
-            },
-          ],
-        };
-      }
-
-      case "notion_get_page": {
-        const response = await notion.pages.retrieve({
-          page_id: args.page_id,
-        });
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(response, null, 2),
-            },
-          ],
-        };
-      }
-
-      case "notion_get_block_children": {
-        const response = await notion.blocks.children.list({
-          block_id: args.block_id,
-        });
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(response.results, null, 2),
-            },
-          ],
-        };
-      }
-
-      case "notion_append_block_children": {
-        const response = await notion.blocks.children.append({
-          block_id: args.block_id,
-          children: [
-            {
-              object: 'block',
-              type: 'paragraph',
-              paragraph: {
-                rich_text: [
-                  {
-                    type: 'text',
-                    text: {
-                      content: args.text,
-                    },
-                  },
-                ],
-              },
-            },
-          ],
-        });
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(response, null, 2),
-            },
-          ],
-        };
-      }
-
-      case "notion_query_database": {
-        const response = await notion.databases.query({
-          database_id: args.database_id,
-          page_size: 10,
-        });
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(response.results, null, 2),
-            },
-          ],
-        };
-      }
-
-      default:
-        throw new Error(`Tool không hợp lệ: ${name}`);
-    }
   } catch (error) {
     return {
       isError: true,
@@ -258,22 +203,115 @@ app.get('/health', (req, res) => {
   res.status(200).send('Notion MCP SSE Server đang hoạt động tốt.');
 });
 
+// Endpoint Discovery theo chuẩn MCP cho Gemini Client tự phát hiện
+const sendMcpDiscovery = (req, res) => {
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+  const host = req.headers['x-forwarded-host'] || req.get('host');
+  const baseUrl = `${protocol}://${host}`;
+
+  res.json({
+    name: "notion-mcp-server",
+    version: "1.0.0",
+    protocolVersion: "2024-11-05",
+    description: "Notion MCP SSE Server for Gemini Integration",
+    transports: {
+      sse: {
+        url: `${baseUrl}/sse`
+      }
+    },
+    capabilities: {
+      tools: NOTION_TOOLS
+    }
+  });
+};
+
+app.get('/.well-known/mcp.json', sendMcpDiscovery);
+app.get('/.well-known/mcp', sendMcpDiscovery);
+app.get('/mcp.json', sendMcpDiscovery);
+
+// Cung cấp OpenAPI 3.0 spec phòng trường hợp Gemini kết nối dạng Custom Action / Extension REST
+app.get('/openapi.json', (req, res) => {
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+  const host = req.headers['x-forwarded-host'] || req.get('host');
+  const baseUrl = `${protocol}://${host}`;
+
+  res.json({
+    openapi: "3.0.0",
+    info: {
+      title: "Notion MCP Server API",
+      version: "1.0.0",
+      description: "Notion Workspace API for Gemini Custom Extension"
+    },
+    servers: [{ url: baseUrl }],
+    paths: {
+      "/tools/notion_search": {
+        post: {
+          summary: "Search Notion workspace",
+          operationId: "notion_search",
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: { query: { type: "string" } },
+                  required: ["query"]
+                }
+              }
+            }
+          },
+          responses: { "200": { description: "Success" } }
+        }
+      },
+      "/tools/notion_get_page": {
+        post: {
+          summary: "Get Notion page details",
+          operationId: "notion_get_page",
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: { page_id: { type: "string" } },
+                  required: ["page_id"]
+                }
+              }
+            }
+          },
+          responses: { "200": { description: "Success" } }
+        }
+      }
+    }
+  });
+});
+
+// REST Endpoints cho từng Tool (cho phép Gemini gọi dạng REST Action nếu cần)
+app.post('/tools/:toolName', async (req, res) => {
+  try {
+    const result = await executeNotionTool(req.params.toolName, req.body || {});
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Hàm xử lý SSE luồng dữ liệu thời gian thực
 const handleSse = async (req, res) => {
+  // Nếu Client gọi GET với Header Accept application/json, trả về Discovery JSON
+  if (req.headers.accept && req.headers.accept.includes('application/json')) {
+    return sendMcpDiscovery(req, res);
+  }
+
   console.log("🔗 Khởi tạo kết nối SSE từ Client...");
   
-  // Tự động tạo Absolute URL đầy đủ cho messages endpoint
   const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
   const host = req.headers['x-forwarded-host'] || req.get('host');
   const messagesUrl = `${protocol}://${host}/messages`;
 
   console.log(`📡 Sending endpoint event URL: ${messagesUrl}`);
 
-  // Thiết lập SSEServerTransport với Absolute URL
   const transport = new SSEServerTransport(messagesUrl, res);
   transports.set(transport.sessionId, transport);
 
-  // Gửi heartbeat ping mỗi 25s giữ cho kết nối SSE luôn sống qua Render Proxy
   const heartbeat = setInterval(() => {
     if (!res.writableEnded) {
       res.write(': keep-alive\n\n');
@@ -289,7 +327,7 @@ const handleSse = async (req, res) => {
   await mcpServer.connect(transport);
 };
 
-// Hỗ trợ cả /sse lẫn route gốc / cho các Client tự động quét root path
+// Hỗ trợ /sse và route gốc /
 app.get('/sse', handleSse);
 app.get('/', handleSse);
 
@@ -306,13 +344,13 @@ app.post('/messages', async (req, res) => {
     return res.status(404).send(`Không tìm thấy Session SSE hợp lệ cho ID: ${sessionId}`);
   }
 
-  // Truyền req.body trực tiếp vào handlePostMessage để tránh lỗi stream readable
   await transport.handlePostMessage(req, res, req.body);
 });
 
 // Khởi chạy HTTP Server
 app.listen(PORT, () => {
-  console.log(`🚀 Notion MCP SSE Server đang chạy tại Cổng (Port): ${PORT}`);
+  console.log(`🚀 Notion MCP Hybrid Server đang chạy tại Cổng (Port): ${PORT}`);
   console.log(`📡 Endpoint SSE: http://localhost:${PORT}/sse`);
   console.log(`📩 Endpoint Messages: http://localhost:${PORT}/messages`);
+  console.log(`🔎 Endpoint Discovery: http://localhost:${PORT}/.well-known/mcp.json`);
 });
