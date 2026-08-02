@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { Client } from '@notionhq/client';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
@@ -26,9 +27,9 @@ const app = express();
 // Cấu hình CORS mở rộng toàn diện cho Gemini Client
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'POST', 'OPTIONS', 'HEAD'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'x-mcp-version', 'mcp-version', 'x-mcp-transport'],
-  exposedHeaders: ['Content-Type', 'x-mcp-version']
+  methods: ['GET', 'POST', 'OPTIONS', 'HEAD', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'x-mcp-version', 'mcp-version', 'x-mcp-transport', 'mcp-session-id'],
+  exposedHeaders: ['Content-Type', 'x-mcp-version', 'mcp-session-id']
 }));
 
 // Logger ghi vết tất cả các request đến từ Gemini để chẩn đoán
@@ -195,15 +196,19 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Lưu trữ các active SSE Transports theo Session ID
-const transports = new Map();
+// Khởi tạo StreamableHTTP Transport chuẩn mới cho Gemini MCP Client
+const streamableTransport = new StreamableHTTPServerTransport();
+await mcpServer.connect(streamableTransport);
+
+// Lưu trữ các active SSE Transports theo Session ID cho Legacy SSE
+const sseTransports = new Map();
 
 // Endpoint Health check & Keep-awake cho Render Free Tier
 app.get('/health', (req, res) => {
-  res.status(200).send('Notion MCP SSE Server đang hoạt động tốt.');
+  res.status(200).send('Notion MCP Server đang hoạt động tốt.');
 });
 
-// Endpoint Discovery theo chuẩn MCP cho Gemini Client tự phát hiện
+// Endpoint Discovery theo chuẩn MCP
 const sendMcpDiscovery = (req, res) => {
   const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
   const host = req.headers['x-forwarded-host'] || req.get('host');
@@ -213,8 +218,11 @@ const sendMcpDiscovery = (req, res) => {
     name: "notion-mcp-server",
     version: "1.0.0",
     protocolVersion: "2024-11-05",
-    description: "Notion MCP SSE Server for Gemini Integration",
+    description: "Notion MCP Server for Gemini Integration",
     transports: {
+      streamableHttp: {
+        url: `${baseUrl}/mcp`
+      },
       sse: {
         url: `${baseUrl}/sse`
       }
@@ -229,88 +237,43 @@ app.get('/.well-known/mcp.json', sendMcpDiscovery);
 app.get('/.well-known/mcp', sendMcpDiscovery);
 app.get('/mcp.json', sendMcpDiscovery);
 
-// Cung cấp OpenAPI 3.0 spec phòng trường hợp Gemini kết nối dạng Custom Action / Extension REST
-app.get('/openapi.json', (req, res) => {
-  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
-  const host = req.headers['x-forwarded-host'] || req.get('host');
-  const baseUrl = `${protocol}://${host}`;
-
-  res.json({
-    openapi: "3.0.0",
-    info: {
-      title: "Notion MCP Server API",
-      version: "1.0.0",
-      description: "Notion Workspace API for Gemini Custom Extension"
-    },
-    servers: [{ url: baseUrl }],
-    paths: {
-      "/tools/notion_search": {
-        post: {
-          summary: "Search Notion workspace",
-          operationId: "notion_search",
-          requestBody: {
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  properties: { query: { type: "string" } },
-                  required: ["query"]
-                }
-              }
-            }
-          },
-          responses: { "200": { description: "Success" } }
-        }
-      },
-      "/tools/notion_get_page": {
-        post: {
-          summary: "Get Notion page details",
-          operationId: "notion_get_page",
-          requestBody: {
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  properties: { page_id: { type: "string" } },
-                  required: ["page_id"]
-                }
-              }
-            }
-          },
-          responses: { "200": { description: "Success" } }
-        }
-      }
-    }
-  });
-});
-
-// REST Endpoints cho từng Tool (cho phép Gemini gọi dạng REST Action nếu cần)
-app.post('/tools/:toolName', async (req, res) => {
+// Xử lý StreamableHTTP endpoint (chuẩn giao thức mới của Gemini MCP)
+const handleStreamableHttp = async (req, res) => {
   try {
-    const result = await executeNotionTool(req.params.toolName, req.body || {});
-    res.json({ success: true, data: result });
+    // Đảm bảo Accept header mở rộng hỗ trợ cả application/json và text/event-stream nếu client không gửi đủ
+    if (req.headers.accept && !req.headers.accept.includes('text/event-stream') && !req.headers.accept.includes('*/*')) {
+      req.headers.accept = `${req.headers.accept}, text/event-stream`;
+    }
+    await streamableTransport.handleRequest(req, res, req.body);
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    console.error("StreamableHTTP error:", err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    }
   }
-});
+};
 
-// Hàm xử lý SSE luồng dữ liệu thời gian thực
+app.all('/mcp', handleStreamableHttp);
+
+// Hàm xử lý SSE luồng dữ liệu thời gian thực cho legacy clients
 const handleSse = async (req, res) => {
-  // Nếu Client gọi GET với Header Accept application/json, trả về Discovery JSON
   if (req.headers.accept && req.headers.accept.includes('application/json')) {
     return sendMcpDiscovery(req, res);
   }
 
-  console.log("🔗 Khởi tạo kết nối SSE từ Client...");
+  // Nếu request POST hoặc có mcp-session-id header -> dùng StreamableHTTP
+  if (req.method === 'POST' || req.headers['mcp-session-id']) {
+    return handleStreamableHttp(req, res);
+  }
+
+  console.log("🔗 Khởi tạo kết nối Legacy SSE từ Client...");
   
   const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
   const host = req.headers['x-forwarded-host'] || req.get('host');
   const messagesUrl = `${protocol}://${host}/messages`;
 
-  console.log(`📡 Sending endpoint event URL: ${messagesUrl}`);
-
   const transport = new SSEServerTransport(messagesUrl, res);
-  transports.set(transport.sessionId, transport);
+  sseTransports.set(transport.sessionId, transport);
 
   const heartbeat = setInterval(() => {
     if (!res.writableEnded) {
@@ -321,15 +284,21 @@ const handleSse = async (req, res) => {
   transport.onclose = () => {
     console.log(`❌ Kết nối SSE bị đóng cho Session: ${transport.sessionId}`);
     clearInterval(heartbeat);
-    transports.delete(transport.sessionId);
+    sseTransports.delete(transport.sessionId);
   };
 
   await mcpServer.connect(transport);
 };
 
-// Hỗ trợ /sse và route gốc /
 app.get('/sse', handleSse);
-app.get('/', handleSse);
+
+// Route gốc / tự động chọn StreamableHTTP hoặc SSE tùy theo request
+app.all('/', async (req, res) => {
+  if (req.method === 'POST') {
+    return handleStreamableHttp(req, res);
+  }
+  return handleSse(req, res);
+});
 
 // 2. POST /messages: Nhận và xử lý các phản hồi/yêu cầu MCP JSON-RPC từ Client
 app.post('/messages', async (req, res) => {
@@ -339,7 +308,7 @@ app.post('/messages', async (req, res) => {
     return res.status(400).send('Thiếu tham số sessionId trên query string.');
   }
 
-  const transport = transports.get(sessionId);
+  const transport = sseTransports.get(sessionId);
   if (!transport) {
     return res.status(404).send(`Không tìm thấy Session SSE hợp lệ cho ID: ${sessionId}`);
   }
@@ -349,8 +318,7 @@ app.post('/messages', async (req, res) => {
 
 // Khởi chạy HTTP Server
 app.listen(PORT, () => {
-  console.log(`🚀 Notion MCP Hybrid Server đang chạy tại Cổng (Port): ${PORT}`);
+  console.log(`🚀 Notion MCP Universal Server (StreamableHTTP + SSE) đang chạy tại Cổng: ${PORT}`);
+  console.log(`⚡️ Endpoint StreamableHTTP: http://localhost:${PORT}/mcp`);
   console.log(`📡 Endpoint SSE: http://localhost:${PORT}/sse`);
-  console.log(`📩 Endpoint Messages: http://localhost:${PORT}/messages`);
-  console.log(`🔎 Endpoint Discovery: http://localhost:${PORT}/.well-known/mcp.json`);
 });
