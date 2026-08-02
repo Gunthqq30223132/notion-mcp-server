@@ -31,7 +31,9 @@ app.use(cors({
   exposedHeaders: ['Content-Type', 'x-mcp-version']
 }));
 
-app.use(express.json());
+// LƯU Ý BẢO MẬT & KỸ THUẬT QUAN TRỌNG:
+// KHÔNG dùng app.use(express.json()) toàn cục vì nó sẽ làm tiêu thụ (consume) stream HTTP request trước, 
+// khiến SSEServerTransport.handlePostMessage bị lỗi "InternalServerError: stream is not readable".
 
 // Khởi tạo MCP Server Instance
 const mcpServer = new Server(
