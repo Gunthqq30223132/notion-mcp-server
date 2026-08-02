@@ -1,0 +1,30 @@
+{
+  "name": "notion-mcp-server-sse",
+  "version": "1.0.0",
+  "description": "Notion Model Context Protocol (MCP) Server using SSE for Gemini Integration",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.1",
+    "@notionhq/client": "^2.2.15",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "notion",
+    "gemini",
+    "sse",
+    "render"
+  ],
+  "author": "Lead Cloud Engineer",
+  "license": "MIT"
+}
