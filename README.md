@@ -74,7 +74,45 @@ git push -u origin main
 6. Nhấn **Create Web Service**.
 
 ### 3. URL Endpoint kết nối Gemini
-Sau khi Deploy thành công, URL kết nối của bạn sẽ có dạng:
+Sau khi Deploy thành công, hãy dán **đúng URL này** vào Gemini:
 ```text
-https://<TEN_APP_CUA_BAN>.onrender.com/sse
+https://<TEN_APP_CUA_BAN>.onrender.com/mcp
 ```
+
+> ⚠️ Gemini chỉ hỗ trợ transport **Streamable HTTP** (`POST /mcp`).
+> Đường `/sse` là transport cũ (spec 2024-11-05), chỉ còn giữ cho các client cũ
+> như MCP Inspector — **không dùng cho Gemini**.
+
+---
+
+## 🧪 Cách tự kiểm tra server (quan trọng)
+
+Test bằng **một** request `curl` là chưa đủ: một MCP client thật luôn gửi
+nhiều request liên tiếp. Hãy chạy ít nhất hai request trên **cùng một tiến trình**:
+
+```bash
+URL=https://<TEN_APP_CUA_BAN>.onrender.com/mcp
+H='-H Content-Type:application/json -H Accept:application/json,text/event-stream'
+
+# 1) initialize  -> phải trả 200
+curl -s -o /dev/null -w '%{http_code}\n' -X POST $URL $H \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}'
+
+# 2) tools/list  -> cũng phải trả 200 (đây là bước hay hỏng nhất)
+curl -s -o /dev/null -w '%{http_code}\n' -X POST $URL $H \
+  -H 'MCP-Protocol-Version: 2025-06-18' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+```
+
+Nếu request thứ nhất trả `200` nhưng request thứ hai trả `500`, server đang
+dùng lại một transport stateless cho nhiều request — đó chính là lỗi khiến
+Gemini báo *"Không thể kết nối với máy chủ MCP"*.
+
+---
+
+## 🔐 Lưu ý bảo mật
+
+Server này hiện **không có xác thực**. `NOTION_API_KEY` nằm ở phía server, nên
+bất kỳ ai biết URL đều có thể đọc/ghi Notion Workspace của bạn qua endpoint
+`/mcp`. Hãy chỉ cấp quyền cho Integration trên đúng những trang cần thiết, và
+cân nhắc thêm một lớp xác thực (bearer token hoặc OAuth 2.1) trước khi dùng lâu dài.
